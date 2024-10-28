@@ -1,9 +1,37 @@
 ARG DOCKER_BASE_IMAGE
 FROM $DOCKER_BASE_IMAGE
 
+ARG DOCKER_BASE_IMAGE
+ENV DOCKER_BASE_IMAGE="${DOCKER_BASE_IMAGE}"
+
 SHELL ["bash", "-euxo", "pipefail", "-c"]
 
 RUN set -euxo pipefail >/dev/null \
+&& if [[ "$DOCKER_BASE_IMAGE" != centos* ]] && [[ "$DOCKER_BASE_IMAGE" != *manylinux2014* ]]; then exit 0; fi \
+&& echo -e "[buildlogs-c7.2009.u]\nname=https://buildlogs.centos.org/c7.2009.u.x86_64/\nbaseurl=https://buildlogs.centos.org/c7.2009.u.x86_64/\nenabled=1\ngpgcheck=0\n\n[buildlogs-c7.2009.00]\nname=https://buildlogs.centos.org/c7.2009.00.x86_64/\nbaseurl=https://buildlogs.centos.org/c7.2009.00.x86_64/\nenabled=1\ngpgcheck=0" > /etc/yum.repos.d/buildlogs.repo \
+&& echo -e "[llvm-toolset]\nname=https://buildlogs.centos.org/c7-llvm-toolset-13.0.x86_64/\nbaseurl=https://buildlogs.centos.org/c7-llvm-toolset-13.0.x86_64/\nenabled=1\ngpgcheck=0" > /etc/yum.repos.d/llvm-toolset.repo \
+&& sed -i "s/enabled=1/enabled=0/g" "/etc/yum/pluginconf.d/fastestmirror.conf" \
+&& sed -i "s/enabled=1/enabled=0/g" "/etc/yum/pluginconf.d/ovl.conf" \
+&& yum clean all \
+&& yum -y install dnf epel-release \
+&& dnf install -y \
+  bash \
+  ca-certificates \
+  curl \
+  gcc \
+  git \
+  make \
+  sudo \
+  patch \
+  sed \
+  tar \
+  xz \
+&& dnf clean all \
+&& rm -rf /var/cache/yum
+
+
+RUN set -euxo pipefail >/dev/null \
+&& if [[ "$DOCKER_BASE_IMAGE" != debian* ]] && [[ "$DOCKER_BASE_IMAGE" != ubuntu* ]]; then exit 0; fi \
 && export DEBIAN_FRONTEND=noninteractive \
 && apt-get update -qq --yes \
 && apt-get install -qq --no-install-recommends --yes \
@@ -11,6 +39,7 @@ RUN set -euxo pipefail >/dev/null \
   bzip2 \
   ca-certificates \
   curl \
+  gcc \
   git \
   make \
   patch \
@@ -23,6 +52,8 @@ RUN set -euxo pipefail >/dev/null \
 && apt-get clean autoclean >/dev/null \
 && apt-get autoremove --yes >/dev/null
 
+
+# We use musl.cc to build our own GCC-musl.
 # HACK: symlinking `ar` is needed for GCC 9.4.0 - it relies on `ar` command, rather than reading the $AR in cross environment
 RUN set -euxo pipefail >/dev/null \
 && curl -fsSL "https://more.musl.cc/10/x86_64-linux-musl/x86_64-linux-musl-cross.tgz" | tar -C "/usr" -xz --strip-components=1 \
@@ -30,6 +61,7 @@ RUN set -euxo pipefail >/dev/null \
 && which ar \
 && which x86_64-linux-musl-gcc \
 && /usr/bin/x86_64-linux-musl-gcc -v
+
 
 ARG USER=user
 ARG GROUP=user
