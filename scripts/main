@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+
+set -euxo pipefail
+
+GIT_REPO_URL="https://github.com/richfelker/musl-cross-make"
+COMMIT_HASH="fd6be58297ee21fcba89216ccd0d4aca1e3f1c5c"
+BINUTILS_VER="2.33.1"
+GCC_VER="9.4.0"
+MUSL_VER="1.2.5"
+
+BUILD_DIR=".build"
+BASE_NAME="gcc-${GCC_VER}-musl-${MUSL_VER}"
+OUT_DIR=".out"
+
+NICE="nice -19 ionice -c2 -n5"
+JOBS="${JOBS:=$(($(nproc --all) + 2))}"
+
+build_time="$(date '+%Y%m%d%H%M%S')"
+
+function abspath() {
+  readlink -m "$1"
+}
+
+THIS_DIR="$(abspath "$(cd "$(dirname "${BASH_SOURCE[0]}")"; pwd)")"
+ROOT_DIR="$(abspath "${THIS_DIR}/..")"
+
+write_config() {
+  target="${1}"
+  filepath="${2}"
+
+  cat > "$filepath" << EOF
+TARGET = $target
+
+
+BINUTILS_VER = $BINUTILS_VER
+GCC_VER = $GCC_VER
+MUSL_VER = $MUSL_VER
+
+COMMON_CONFIG += \\
+	CFLAGS="-g0 -Os -w -fPIC -fPIE -pie" \\
+	CXXFLAGS="-g0 -Os -w -fPIC -fPIE -pie" \\
+	LDFLAGS="-s -pie" \\
+	CC="/usr/bin/x86_64-linux-musl-gcc -static --static -fPIC -fPIE -pie" \\
+	CXX="/usr/bin/x86_64-linux-musl-g++ -static --static -fPIC -fPIE -pie" \\
+	AR="/usr/x86_64-linux-musl/bin/ar" \\
+	AS="/usr/x86_64-linux-musl/bin/as" \\
+	LD="/usr/x86_64-linux-musl/bin/ld" \\
+	OBJCOPY="/usr/x86_64-linux-musl/bin/objcopy" \\
+	OBJDUMP="/usr/x86_64-linux-musl/bin/objdump" \\
+	RANLIB="/usr/x86_64-linux-musl/bin/ranlib" \\
+	READELF="/usr/x86_64-linux-musl/bin/readelf" \\
+	STRIP="/usr/x86_64-linux-musl/bin/strip" \\
+	--disable-nls \\
+	--with-debug-prefix-map=\$(CURDIR)= \\
+	--enable-default-pie \\
+
+GCC_CONFIG += \\
+	--enable-languages=c,c++,fortran,objc,obj-c++ \\
+	--enable-gold=yes \\
+	--enable-ld=yes \\
+	--enable-lto \\
+	--enable-plugins \\
+	--disable-multilib \\
+	--enable-default-pie \\
+
+DL_CMD = curl -C - -L -o
+
+EOF
+}
+
+write_version() {
+  target="${1}"
+  gcc_path=${2}
+  filepath="${3}"
+
+  cat > "$filepath" << EOF
+$GIT_REPO_URL
+$COMMIT_HASH
+$(git rev-parse HEAD)
+$(git describe --always --dirty)
+$(git describe --always --dirty --tags)
+$(git describe --always --dirty --tags --all)
+
+BINUTILS_VER=$BINUTILS_VER
+GCC_VER=$GCC_VER
+MUSL_VER=$MUSL_VER
+TARGET=$target
+
+$ $gcc_path --version
+$($gcc_path --version)
+
+$ $gcc_path -v
+$($gcc_path -v 2>&1)
+
+$ $gcc_path -dumpmachine
+$($gcc_path -dumpmachine)
+
+$ $gcc_path --print-search-dirs
+$($gcc_path --print-search-dirs)
+
+$ $gcc_path -print-prog-name=cc1 -v
+$($gcc_path -print-prog-name=cc1 -v 2>&1)
+
+EOF
+}
+
+targets=(
+  "aarch64-unknown-linux-musl"
+  "x86_64-unknown-linux-musl"
+)
+
+for target in "${targets[@]}"; do
+  build_dir="$(abspath "${ROOT_DIR}/${BUILD_DIR}/$target")"
+  mkdir -p "${build_dir}"
+
+  outdir="$(abspath "${ROOT_DIR}/${OUT_DIR}")"
+  mkdir -p "${outdir}"
+
+  pushd "$build_dir" >/dev/null
+
+    if [ ! -d "musl-cross-make" ]; then
+      git clone --recursive --depth=100 $GIT_REPO_URL
+    fi
+
+    pushd "musl-cross-make" >/dev/null
+      git checkout "$COMMIT_HASH"
+
+      write_config "$target" "config.mak"
+
+      ${NICE} make -j"$(nproc)" 2>&1 | tee build.log | stdbuf -oL grep --color=always -iE "error|fail|fail|cannot|can't|unable|$"
+      ${NICE} make install 2>&1 | tee -a "build.log"
+
+      write_version "$target" "output/bin/$target-gcc" "version.txt"
+
+      cp "${ROOT_DIR}/files/cmake/toolchain-$target.cmake" "output/"
+      cp "build.log" "version.txt" "config.mak" "output/"
+
+    popd >/dev/null
+
+    ${NICE} find "musl-cross-make/output" -printf "%P\n" | tar --no-recursion -cf - -C "musl-cross-make/output" --files-from=- | xz -T0 -k > "${outdir}/${BASE_NAME}-${target}-${build_time}.tar.xz"
+
+  popd >/dev/null
+done
